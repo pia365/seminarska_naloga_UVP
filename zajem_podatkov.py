@@ -1,109 +1,169 @@
-import os # Knjiznjica za delo z datotečnim sistemom
-import re 
-import pandas as pd
+import re
+import csv
 import bs4
 
-PODATKI_MAPA = "podatki"
-CSV_DATOTEKA = "podatki/nepremicnine_ljubljana.csv"
+def prenesi_lokalno_stran(pot_do_datoteke):
+    """Prebere HTML vsebino iz lokalno shranjene datoteke na disku."""
+    try:
+        with open(pot_do_datoteke, "r", encoding="utf-8") as datoteka:
+            return datoteka.read()
+    except FileNotFoundError:
+        print(f"Datoteka {pot_do_datoteke} ne obstaja.")
+        return None
 
-# ==============================================================================
-# POMOŽNE FUNKCIJE ZA ODBDELAVO IN ČIŠČENJE PODATKOV
-# ==============================================================================
-def pocisti_stevilko(besedilo, vzorec, pretvori_v_float = False): 
-    """Pomožna funkcija za čiščenje in pretvorbo številskih nizov iz HTML-ja.
-    Sprejme surovo besedilo in regularni izraz (vzorec). Če najde ujemanje,
-    izlušči številčni del ter ga varno pretvori v int ali float.
-    """
+def pocisti_stevilko(besedilo, vzorec, pretvori_v_float=False):
+    """Pomožna funkcija za čiščenje številskih vrednosti iz besedila."""
     if not besedilo:
         return None
-    ujemanje = re.search(vzorec, besedilo)
-    if ujemanje:
-        niz_stevilke = ujemanje.group(1)
+    najdba = re.search(vzorec, besedilo.replace(".", "").replace(",", "."))
+    if najdba:
         try:
-            if pretvori_v_float:
-                # Za decimalna števila (float): zamenjamo slovensko vejico s piko ("55,20" -> "55.20")
-                return float(niz_stevilke.replace(",", "."))
-            else:
-                # Za cela števila (int): odstranimo pike za tisočice ("250.000" -> "250000")
-                return int(niz_stevilke.replace(".", ""))
+            val = najdba.group(1)
+            return float(val) if pretvori_v_float else int(float(val))
         except ValueError:
-            # Če besedila ni mogoče pretvoriti v število, varno vrnemo None
             return None
-
-    # Če Regex ni našel nobenega ujemanja v besedilu, vrnemo None
     return None
 
-def poisci_podatke_oglasa(oglas_juha):
-    """Iz HTML objekta posamezne podstrani oglasa izlušči vse podrobne podatke."""
+def pocisti_lokacijo(naslov):
+    """Očisti naslov oglasa, da vrne lepo območje (npr. Bežigrad, Vič, Šiška)."""
+    if not naslov:
+        return None
     
-    # 1. LOKACIJA / UPRAVNA ENOTA (Z Regexom poiščemo besedilo za "Upravna enota:")
-    upravna_enota = None
-    ue_element = oglas_juha.find(string=re.compile(r"Upravna enota", re.IGNORECASE))
-    if ue_element:
-        # Preberemo celotno besedilo starševske značke in izrežemo podatek za dvopičjem
-        ujemanje_ue = re.search(r"Upravna enota:\s*(.*)", ue_element.parent.get_text(strip=True))
-        if ujemanje_ue:
-            upravna_enota = ujemanje_ue.group(1).strip()
+    lokacija = naslov.upper()
+    lokacija = lokacija.replace("LJ. ", "").replace("LJUBLJANA - ", "").replace("LJUBLJANA-", "")
+    
+    if "," in lokacija:
+        lokacija = lokacija.split(",")[0]
+        
+    return lokacija.strip().title()
 
-    # 2. CENA (Iščemo razred ali značko z ceno na podstrani oglasa)
-    cena_tag = oglas_juha.find("span", class_="cena") or oglas_juha.find("div", class_="price")
-    cena_besedilo = cena_tag.get_text(strip=True) if cena_tag else None
-    cena = pocisti_stevilko(cena_besedilo, r"([\d.]+)\s*€")
+def določi_stevilo_sob(naslov, opis):
+    """Iz naslova in opisa prepozna število sob oziroma tip stanovanja."""
+    skupno_besedilo = f"{naslov} {opis}".lower()
+    
+    if "garsonjera" in skupno_besedilo:
+        return "Garsonjera"
+    
+    # Išemo vzorce kot npr. "2-sobno", "3 sobno", "dvosobno"
+    match = re.search(r"(\d+)\s*[-]?sobno", skupno_besedilo)
+    if match:
+        return f"{match.group(1)}-sobno"
+        
+    if "dvosobno" in skupno_besedilo:
+        return "2-sobno"
+    if "trisobno" in skupno_besedilo:
+        return "3-sobno"
+    if "enosobno" in skupno_besedilo:
+        return "1-sobno"
+    if "štirisobno" in skupno_besedilo or "4-sobno" in skupno_besedilo:
+        return "4-sobno"
+        
+    return "Neznano"
 
-    # 3. VELIKOST (m2)
-    velikost_tag = oglas_juha.find("span", class_="velikost") or oglas_juha.find("div", class_="size")
-    velikost_besedilo = velikost_tag.get_text(strip=True) if velikost_tag else None
-    velikost = pocisti_stevilko(velikost_besedilo, r"([\d,]+)\s*m2", pretvori_v_float=True)
+def poisci_podatke_oglasa(oglas):
+    """Iz posameznega bloka oglasa izlušči ID, naslov, lokacijo, število sob, ceno, velikost in leto."""
+    
+    # 1. ID OGLASA
+    data_href = oglas.get("data-href", "")
+    id_ujemanje = re.search(r"_(\d+)/", data_href)
+    id_oglasa = id_ujemanje.group(1) if id_ujemanje else None
 
-    # 4. LETO GRADNJE
-    leto_tag = oglas_juha.find("span", class_="leto") or oglas_juha.find("div", class_="year")
-    leto_besedilo = leto_tag.get_text(strip=True) if leto_tag else None
-    leto = pocisti_stevilko(leto_besedilo, r"(\d{4})")
+    # 2. NASLOV
+    naslov_tag = oglas.find("h2")
+    naslov = naslov_tag.get_text(strip=True) if naslov_tag else None
 
-    # Izračun cene na m2 (če imamo oba podatka)
+    # 3. LOKACIJA
+    lokacija = pocisti_lokacijo(naslov)
+
+    # 4. OPIS (za prepoznavanje sob)
+    desc_tag = oglas.find("p", {"itemprop": "description"})
+    opis = desc_tag.get_text(strip=True) if desc_tag else ""
+
+    # 5. ŠTEVILO SOB
+    stevilo_sob = določi_stevilo_sob(naslov, opis)
+
+    # 6. CENA
+    meta_cena = oglas.find("meta", {"itemprop": "price"})
+    if meta_cena and meta_cena.get("content"):
+        try:
+            cena = float(meta_cena["content"])
+        except ValueError:
+            cena = None
+    else:
+        cena_tag = oglas.find("h6")
+        cena_besedilo = cena_tag.get_text(strip=True) if cena_tag else None
+        cena = pocisti_stevilko(cena_besedilo, r"([\d.]+)", pretvori_v_float=True)
+
+    # 7. VELIKOST IN LETO
+    velikost = None
+    leto_gradnje = None
+    
+    ul_tag = oglas.find("ul", {"itemprop": "disambiguatingDescription"})
+    if ul_tag:
+        elementi_li = ul_tag.find_all("li")
+        if len(elementi_li) >= 2:
+            velikost_besedilo = elementi_li[0].get_text(strip=True)
+            velikost = pocisti_stevilko(velikost_besedilo, r"([\d,]+)", pretvori_v_float=True)
+            
+            leto_besedilo = elementi_li[1].get_text(strip=True)
+            leto_gradnje = pocisti_stevilko(leto_besedilo, r"(\d{4})")
+
+    # Izračun cene na m2
     cena_per_m2 = round(cena / velikost, 2) if (cena and velikost) else None
 
     return {
-        "upravna_enota": upravna_enota,
+        "id": id_oglasa,
+        "naslov": naslov,
+        "lokacija": lokacija,
+        "stevilo_sob": stevilo_sob,
         "cena": cena,
         "velikost_m2": velikost,
-        "leto_gradnje": leto,
+        "leto_gradnje": leto_gradnje,
         "cena_per_m2": cena_per_m2
     }
 
-
 def poisci_vse_oglase(html_vsebina):
-    """Iz celotne HTML kode seznama poišče vse oglase in izlušči podatke."""
+    """Poišče vse bloke oglasov v HTML vsebini in vrne seznam slovarjev."""
     juha = bs4.BeautifulSoup(html_vsebina, "html.parser")
     seznam_oglasov = []
-
-    # Poiščemo vse bloke oglasov na seznamu
-    bloki_oglasov = juha.find_all("div", class_="property-details") or juha.find_all("div", class_="o-loop")
+    bloki_oglasov = juha.find_all("div", class_="property-details")
 
     for oglas in bloki_oglasov:
-        # 1. Najprej iz seznama poberemo ID in osnovni naslov
-        id_oglasa = oglas.get("id") or oglas.get("data-id")
-        
-        naslov_tag = oglas.find("span", class_="title") or oglas.find("a")
-        naslov = naslov_tag.get_text(strip=True) if naslov_tag else None
-
-        # 2. Poiščemo podatke znotraj tega oglasa (ali podstrani)
-        podatki_oglasa = poisci_podatke_oglasa(oglas)
-        
-        # 3. Združimo vse podatke v en slovar
-        zdruzeni_podatki = {
-            "id": id_oglasa,
-            "naslov": naslov,
-            **podatki_oglasa  # Doda vse kjuče iz funkcije poisci_podatke_oglasa
-        }
-        
-        seznam_oglasov.append(zdruzeni_podatki)
+        podatki = poisci_podatke_oglasa(oglas)
+        seznam_oglasov.append(podatki)
 
     return seznam_oglasov
 
-def shrani_v_csv(seznam_oglasov, pot_do_datoteke=CSV_DATOTEKA):
-    """Sprejme seznam slovarjev z oglasi in jih shrani v CSV datoteko."""
-    os.makedirs(PODATKI_MAPA, exist_ok=True)
-    df = pd.DataFrame(seznam_oglasov)
-    df.to_csv(pot_do_datoteke, index=False, encoding="utf-8")
+def shrani_v_csv(oglasi, izhodna_datoteka="nepremicnine.csv"):
+    """Shrani seznam oglasov v CSV datoteko."""
+    if not oglasi:
+        print("Ni podatkov za shranjevanje.")
+        return
 
+    kljuci = oglasi[0].keys()
+    with open(izhodna_datoteka, "w", newline="", encoding="utf-8") as f:
+        pisatelj = csv.DictWriter(f, fieldnames=kljuci)
+        pisatelj.writeheader()
+        for oglas in oglasi:
+            pisatelj.writerow(oglas)
+
+if __name__ == "__main__":
+    vsi_oglasi = []
+    stevilo_strani = 10 
+    
+    print("Začenjam z branjem vseh 10 lokalnih datotek...")
+    
+    for i in range(1, stevilo_strani + 1):
+        pot_datoteke = f"podatki/stran-{i}.html"
+        html_strani = prenesi_lokalno_stran(pot_datoteke)
+        
+        if html_strani:
+            oglasi_na_strani = poisci_vse_oglase(html_strani)
+            vsi_oglasi.extend(oglasi_na_strani)
+            print(f" -> Prebrana {pot_datoteke}: najdenih {len(oglasi_na_strani)} oglasov.")
+
+    print(f"\nSkupno uspešno zbranih oglasov: {len(vsi_oglasi)}")
+    
+    # Shranimo vse zbrane podatke v CSV
+    shrani_v_csv(vsi_oglasi)
+    print("Vsi podatki so uspešno shranjeni v 'nepremicnine.csv'!")
