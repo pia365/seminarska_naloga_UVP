@@ -1,4 +1,3 @@
-# seminarska_naloga_UVP
 # Analiza ljubljanskega nepremičninskega trga
 
 Seminarska naloga pri predmetu **Uvod v programiranje** .
