@@ -1,9 +1,9 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 
-# 1. Naložitev podatkov iz CSV datoteke
-pot_csv = "podatki/nepremicnine.csv"
-df = pd.read_csv(pot_csv)
+# 1. Naložimo podatke iz CSV datoteke
+df = pd.read_csv("podatki/nepremicnine.csv") 
 
 # 2. Funkcija za mapiranje in združevanje surovih lokacij v smiselne mestne četrti
 def zdruzi_v_skupine(lokacija):
@@ -39,15 +39,25 @@ def zdruzi_v_skupine(lokacija):
     else:
         return None
 
-# Ustvarimo nov stolpec z urejenimi skupinami in odstranimo neveljavne vrstice
+# Ustvarimo nov stolpec z urejenimi skupinami
 df['skupina_lokacij'] = df['lokacija'].apply(zdruzi_v_skupine)
-df = df.dropna(subset=['skupina_lokacij'])
 
-print("--- OSNOVNE INFORMACIJE O ANALIZI ---")
-print(f"Skupno število uspešno obdelanih oglasov: {len(df)}")
+# Očistimo numerične stolpce (cena, velikost, leto)
+df['cena_num'] = pd.to_numeric(df['cena'].astype(str).str.replace(' ', '').str.replace(',', '.'), errors='coerce')
+df['velikost_num'] = pd.to_numeric(df['velikost_m2'].astype(str).str.replace(' ', '').str.replace(',', '.'), errors='coerce')
+df['leto_num'] = pd.to_numeric(df['leto_gradnje'], errors='coerce')
+
+# Na novo in pravilno izračunamo ceno na m², da se izognemo naramnim nulam ali napakam
+df['cena_per_m2'] = df['cena_num'] / df['velikost_num']
+
+# Odstranimo vrstice, kjer nimamo lokacije ali pa so vrednosti cen/kvadrature enake 0 ali manjšo (prepreči padec grafa na 0)
+df = df.dropna(subset=['skupina_lokacij'])
+df = df[(df['cena_num'] > 0) & (df['velikost_num'] > 0) & (df['cena_per_m2'] > 0)]
+
+print(f"Število oglasov po čiščenju in odstranitvi neveljavnih cen: {len(df)}")
 print()
 
-# 3. Podrobna statistična analiza (št. oglasov, povprečje, mediana, min, max)
+# 3. Podrobna statistična analiza po četrtih
 statistike = df.groupby('skupina_lokacij')['cena_per_m2'].agg(
     št_oglasov='count',
     povprečje='mean',
@@ -60,124 +70,103 @@ print("--- PODROBNA STATISTIKA CENA / m² PO ČETRTEH ---")
 print(statistike.sort_values(by='povprečje', ascending=False))
 print()
 
-# 4. PRVI GRAF: Povprečna cena m² po območjih (horizontalni stolpci)
-povprecje_skupin = statistike['povprečje']
 
+# --- GRAFI ---
+
+# 1. GRAF: Povprečna cena m² po območjih
 plt.figure(figsize=(12, 8))
-povprecje_skupin.sort_values().plot(kind='barh', color='cornflowerblue', edgecolor='black')
-plt.title('Povprečna cena m² po ljubljanskih četrteh in območjih', fontsize=14, fontweight='bold')
+statistike['povprečje'].sort_values().plot(kind='barh', color='cornflowerblue', edgecolor='black')
+plt.title('Povprečna cena m² po ljubljanskih četrteh', fontsize=14, fontweight='bold')
 plt.xlabel('Cena / m² (€)', fontsize=12)
 plt.ylabel('Območje', fontsize=12)
+plt.grid(axis='x', linestyle='--', alpha=0.7)
 plt.tight_layout()
+plt.close()
 
-plt.savefig('graf_natancne_skupine.png', dpi=300)
-print("Graf cen je bil uspešno shranjen kot 'graf_natancne_skupine.png'!")
+# 2. GRAF: Število oglasov po območjih
+plt.figure(figsize=(11, 6))
+df['skupina_lokacij'].value_counts().sort_values().plot(kind='barh', color='mediumpurple', edgecolor='black', width=0.8)
+plt.title('Število nepremičninskih oglasov po ljubljanskih območjih', fontsize=14, fontweight='bold')
+plt.xlabel('Število oglasov', fontsize=12)
+plt.ylabel('Območje', fontsize=12)
+plt.grid(axis='x', linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.close()
 
-# Prikaz prvega grafa (ko ga zapreš, se odpre drugi graf)
-plt.show()
+# 3. GRAF: Porazdelitev stanovanj po številu sob
+def ocisti_sobe(val):
+    if pd.isna(val):
+        return None
+    v = str(val).strip().lower()
+    if "garsonjer" in v: return "Garsonjera"
+    elif "1" in v and "1," not in v and "1." not in v: return "1-sobno"
+    elif "2" in v and "2," not in v and "2." not in v: return "2-sobno"
+    elif "3" in v and "3," not in v and "3." not in v: return "3-sobno"
+    elif "4" in v: return "4-sobno"
+    elif "5" in v or "več" in v: return "5+ sobno"
+    return None
 
-# 5. DRUGI GRAF: Porazdelitev stanovanj po številu sob (Garsonjera na 1. mestu, brez neznanega)
-stolpec_sob = 'stevilo_sob'
+df['urejene_sobe'] = df['stevilo_sob'].apply(ocisti_sobe)
+zeleni_vrstni_red = ["Garsonjera", "1-sobno", "2-sobno", "3-sobno", "4-sobno", "5+ sobno"]
+stevci_sob = df['urejene_sobe'].value_counts().reindex([kat for kat in zeleni_vrstni_red if kat in df['urejene_sobe'].unique()])
 
-if stolpec_sob in df.columns:
-    # Funkcija za čiščenje – ohranimo le garsonjere in čista števila sob
-    def ocisti_sobe(val):
-        if pd.isna(val):
-            return None
-        v = str(val).strip().lower()
-        
-        if "garsonjer" in v:
-            return "Garsonjera"
-        elif "1" in v and "1," not in v and "1." not in v:
-            return "1-sobno"
-        elif "2" in v and "2," not in v and "2." not in v:
-            return "2-sobno"
-        elif "3" in v and "3," not in v and "3." not in v:
-            return "3-sobno"
-        elif "4" in v:
-            return "4-sobno"
-        elif "5" in v or "več" in v:
-            return "5+ sobno"
-        else:
-            return None  # Vse ostalo (vključno z neznanim) zavržemo
+plt.figure(figsize=(10, 6))
+stevci_sob.plot(kind='bar', color='steelblue', edgecolor='black', width=0.8)
+plt.title('Porazdelitev stanovanj glede na število sob', fontsize=14, fontweight='bold')
+plt.xlabel('Tip stanovanja', fontsize=12)
+plt.ylabel('Število stanovanj', fontsize=12)
+plt.xticks(rotation=0)
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.close()
 
-    df['urejene_sobe'] = df[stolpec_sob].apply(ocisti_sobe)
-    
-    # Točen vrstni red (Garsonjera na prvem mestu)
-    zeleni_vrstni_red = ["Garsonjera", "1-sobno", "2-sobno", "3-sobno", "4-sobno", "5+ sobno"]
-    
-    # Izračunamo frekvence in jih filtriramo glede na zgornji seznam (brez neznanega)
-    stevci_sob = df['urejene_sobe'].value_counts()
-    stevci_sob = stevci_sob.reindex([kat for kat in zeleni_vrstni_red if kat in stevci_sob.index])
+# 4. GRAF: Raztreseni diagram (Kvadratura vs Skupna cena)
+plt.figure(figsize=(10, 6))
+plt.scatter(df['velikost_num'], df['cena_num'], color='teal', alpha=0.6, edgecolor='black', s=40)
+plt.title('Vpliv kvadrature na skupno ceno stanovanja', fontsize=14, fontweight='bold')
+plt.xlabel('Kvadratura (m²)', fontsize=12)
+plt.ylabel('Skupna cena (€)', fontsize=12)
+plt.ticklabel_format(style='plain', axis='both')
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.close()
 
-    plt.figure(figsize=(10, 6))
-    stevci_sob.plot(kind='bar', color='steelblue', edgecolor='black', width=0.8)
-    
-    plt.title('Porazdelitev stanovanj glede na število sob', fontsize=14, fontweight='bold')
-    plt.xlabel('Tip stanovanja / Število sob', fontsize=12)
-    plt.ylabel('Število stanovanj (oglasov)', fontsize=12)
-    plt.xticks(rotation=0)  # Ohranimo vodoravne napise
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.tight_layout()
+# 5. GRAF: Povprečna cena na m² glede na leto gradnje
+cena_po_letih = df.groupby('leto_num')['cena_per_m2'].mean().sort_index()
+plt.figure(figsize=(11, 6))
+cena_po_letih.plot(kind='line', marker='o', color='darkorange', linewidth=2, markersize=5)
+plt.title('Povprečna cena na m² glede na leto gradnje stavbe', fontsize=14, fontweight='bold')
+plt.xlabel('Leto gradnje', fontsize=12)
+plt.ylabel('Povprečna cena / m² (€)', fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.close()
 
-    plt.savefig('graf_struktura_sob.png', dpi=300)
-    print("Graf strukture sob je bil uspešno shranjen kot 'graf_struktura_sob.png'!")
+# 6. GRAF: Škatlasti diagram (Boxplot) cen na m² glede na število sob
+plt.figure(figsize=(11, 6))
+df_box = df.dropna(subset=['urejene_sobe', 'cena_per_m2'])
+obstojuce_kategorije = [kat for kat in zeleni_vrstni_red if kat in df_box['urejene_sobe'].values]
+podatki_box = [df_box[df_box['urejene_sobe'] == kat]['cena_per_m2'] for kat in obstojuce_kategorije]
 
-    plt.show()
-else:
-    print(f"Opozorilo: Stolpec '{stolpec_sob}' ni bil najden v datoteki.")
+plt.boxplot(podatki_box, patch_artist=True,
+            boxprops=dict(facecolor='lightblue', color='black'),
+            medianprops=dict(color='red', linewidth=2))
 
-# 6. TRETJI GRAF: Raztreseni diagram (Cena glede na kvadraturo)
-stolpec_kvadratura = 'velikost_m2'
-stolpec_cena = 'cena'
-
-if stolpec_kvadratura in df.columns and stolpec_cena in df.columns:
-    plt.figure(figsize=(10, 6))
-    
-    # Skrbno očistimo in pretvorimo podatke v števila (odstranimo morebitne presledke ipd.)
-    x = pd.to_numeric(df[stolpec_kvadratura].astype(str).str.replace(' ', '').str.replace(',', '.'), errors='coerce')
-    y = pd.to_numeric(df[stolpec_cena].astype(str).str.replace(' ', '').str.replace(',', '.'), errors='coerce')
-    
-    plt.scatter(x, y, color='teal', alpha=0.6, edgecolor='black', s=40)
-    
-    plt.title('Vpliv kvadrature na skupno ceno stanovanja', fontsize=14, fontweight='bold')
-    plt.xlabel('Kvadratura (m²)', fontsize=12)
-    plt.ylabel('Skupna cena (€)', fontsize=12)
-    
-    # Izklopimo znanstveno zapisovanje / čudno skaliranje osi, da so vidne cele vrednosti
-    plt.ticklabel_format(style='plain', axis='both')
-    
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.tight_layout()
-
-    plt.savefig('graf_cena_kvadratura.png', dpi=300)
-    print("Tretji graf (cena glede na kvadraturo) je bil uspešno shranjen kot 'graf_cena_kvadratura.png'!")
-
-    plt.show()
-else:
-    print("Opozorilo: Stolpca za kvadraturo ali ceno nista bila najdena.")
-
-# 7. ČETRTI GRAF: Škatlasti diagram (Boxplot) cen na m² po posameznih četrteh
-plt.figure(figsize=(12, 7))
-
-podatki_za_boxplot = [group['cena_per_m2'].dropna() for name, group in df.groupby('skupina_lokacij')]
-ime_skupin = [name for name, group in df.groupby('skupina_lokacij')]
-
-# Narišemo boxplot BREZ argumenta labels
-bp = plt.boxplot(podatki_za_boxplot, patch_artist=True, 
-                 boxprops=dict(facecolor='lightblue', color='black'),
-                 medianprops=dict(color='red', linewidth=1.5))
-
-# Imena četrti nastavimo tukaj posebej, kar deluje v vseh verzijah Matplotliba
-plt.xticks(ticks=range(1, len(ime_skupin) + 1), labels=ime_skupin, rotation=45, ha='right')
-
-plt.title('Porazdelitev in razpon cen na m² po ljubljanskih območjih', fontsize=14, fontweight='bold')
-plt.xlabel('Območje', fontsize=12)
+plt.xticks(range(1, len(obstojuce_kategorije) + 1), obstojuce_kategorije)
+plt.title('Razpon cen na m² glede na tip stanovanja (Boxplot)', fontsize=14, fontweight='bold')
+plt.xlabel('Tip stanovanja', fontsize=12)
 plt.ylabel('Cena / m² (€)', fontsize=12)
 plt.grid(axis='y', linestyle='--', alpha=0.7)
 plt.tight_layout()
+plt.close()
 
-plt.savefig('graf_box_cene.png', dpi=300)
-print("Četrti graf (škatlasti diagram cen) je bil uspešno shranjen kot 'graf_box_cene.png'!")
+# 7. GRAF: Korelacijska matrika (Heatmap) vseh numeričnih podatkov
+numeric_df = df[['cena_num', 'velikost_num', 'cena_per_m2', 'leto_num']].dropna()
 
-plt.show()
+plt.figure(figsize=(8, 6))
+sns.heatmap(numeric_df.corr(), annot=True, cmap='coolwarm', fmt=".2f", linewidths=.5)
+plt.title('Korelacijska matrika nepremičninskih podatkov', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.close()
+
+print("Vsi grafi (vključno s korelacijsko matriko) so bili uspešno ustvarjeni in shranjeni!")

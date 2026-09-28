@@ -167,3 +167,4 @@ if __name__ == "__main__":
     # Shranimo vse zbrane podatke v CSV
     shrani_v_csv(vsi_oglasi)
     print("Vsi podatki so uspešno shranjeni v 'nepremicnine.csv'!")
+
